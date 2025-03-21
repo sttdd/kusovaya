@@ -16,8 +16,8 @@ import os
 
 # Конфигурационные данные
 CONFIG = {
-    "TELEGRAM_TOKEN": "8145966454:AAGuPNiR2JRT4gHqgMsBhDmSUNBllevTHk8",
-    "HR_CHAT_ID": "1956559043",
+    "TELEGRAM_TOKEN": "",
+    "HR_CHAT_ID": "",
     "DB_URL": "postgresql://postgres:1234@localhost:5432/kursovaya"
 }
 
