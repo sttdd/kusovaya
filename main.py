@@ -18,7 +18,7 @@ import os
 CONFIG = {
     "TELEGRAM_TOKEN": "",
     "HR_CHAT_ID": "",
-    "DB_URL": "postgresql://postgres:1234@localhost:5432/kursovaya"
+    "DB_URL": "postgresql://postgres:1234@localhost:5432/kkuurrss"
 }
 
 # Настройка логирования
@@ -29,11 +29,11 @@ logger = logging.getLogger(__name__)
 bot = telebot.TeleBot(CONFIG["TELEGRAM_TOKEN"])
 
 # Регистрация шрифта с поддержкой кириллицы
-font_path = "DejaVuSans.ttf"  # Укажите путь к файлу шрифта
+font_path = "DejaVuSans.ttf"
 if os.path.exists(font_path):
     pdfmetrics.registerFont(TTFont("DejaVuSans", font_path))
 else:
-    logger.error("Шрифт DejaVuSans.ttf не найден. Скачайте его и поместите в директорию скрипта.")
+    logger.error("Шрифт DejaVuSans.ttf не найден.")
     raise FileNotFoundError("Шрифт DejaVuSans.ttf не найден")
 
 # Базовый класс для моделей
@@ -82,7 +82,7 @@ def db_session():
         session.commit()
     except Exception as e:
         session.rollback()
-        logger.error(f"Database error: {e}")
+        logger.error(f"Ошибка базы данных: {e}")
         raise e
     finally:
         session.close()
@@ -121,23 +121,23 @@ def is_admin(chat_id):
 def send_message(chat_id, text, reply_markup=None):
     try:
         msg = bot.send_message(chat_id, text, reply_markup=reply_markup)
-        logger.info(f"Message sent to {chat_id}: {text}")
+        logger.info(f"Сообщение отправлено {chat_id}: {text}")
         return msg
     except Exception as e:
-        logger.error(f"Failed to send message to {chat_id}: {e}")
+        logger.error(f"Ошибка отправки сообщения {chat_id}: {e}")
         raise
 
 def send_pdf(chat_id, pdf_buffer, filename):
     pdf_buffer.seek(0)
     bot.send_document(chat_id, pdf_buffer, visible_file_name=filename)
-    logger.info(f"PDF report {filename} sent to {chat_id}")
+    logger.info(f"PDF отчет {filename} отправлен {chat_id}")
 
 def delete_message(chat_id, message_id):
     try:
         bot.delete_message(chat_id, message_id)
-        logger.info(f"Message {message_id} deleted in chat {chat_id}")
+        logger.info(f"Сообщение {message_id} удалено в чате {chat_id}")
     except Exception:
-        logger.warning(f"Failed to delete message {message_id} in chat {chat_id}")
+        logger.warning(f"Не удалось удалить сообщение {message_id} в чате {chat_id}")
 
 def validate_date(date_str, allow_past=False):
     try:
@@ -166,7 +166,6 @@ def generate_pdf_report(title, content_lines):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
-    # Настройка стилей с поддержкой кириллицы
     styles.add(ParagraphStyle(name='CustomTitle', fontName='DejaVuSans', fontSize=14, leading=16))
     styles.add(ParagraphStyle(name='CustomNormal', fontName='DejaVuSans', fontSize=10, leading=12))
     story = [Paragraph(title, styles['CustomTitle']), Spacer(1, 12)]
@@ -202,11 +201,22 @@ def back_to_main_menu(message):
 
 @bot.message_handler(func=lambda m: m.text == "🏖️ Отпуск")
 def handle_vacation(message):
-    send_message(message.chat.id, "Тип отпуска:", Keyboards.vacation_type())
+    chat_id = message.chat.id
+    with db_session() as session:
+        user = session.query(User).filter_by(user_id=chat_id).first()
+        if not user:
+            send_message(chat_id, "Сначала зарегистрируйтесь с помощью /start")
+            return
+    send_message(chat_id, "Тип отпуска:", Keyboards.vacation_type())
 
 @bot.message_handler(func=lambda m: m.text == "🤒 Больничный")
 def handle_sick_leave(message):
     chat_id = message.chat.id
+    with db_session() as session:
+        user = session.query(User).filter_by(user_id=chat_id).first()
+        if not user:
+            send_message(chat_id, "Сначала зарегистрируйтесь с помощью /start")
+            return
     send_message(chat_id, "Дата начала (ГГГГ-ММ-ДД):", Keyboards.main_menu())
     bot.register_next_step_handler(message, application_start_date, "больничный")
 
@@ -275,18 +285,33 @@ def register_email(message, first_name, last_name, position, department):
         return
     with db_session() as session:
         try:
-            session.add(User(user_id=chat_id, first_name=first_name, last_name=last_name,
-                            position=position, department=department, email=message.text))
-            send_message(chat_id, "Регистрация завершена", Keyboards.action(chat_id))
+            new_user = User(
+                user_id=chat_id,
+                first_name=first_name,
+                last_name=last_name,
+                position=position,
+                department=department,
+                email=message.text
+            )
+            session.add(new_user)
+            session.flush()  # Принудительно записываем в БД
+            # Проверяем, что пользователь действительно сохранен
+            saved_user = session.query(User).filter_by(user_id=chat_id).first()
+            if saved_user:
+                logger.info(f"Пользователь {chat_id} успешно зарегистрирован")
+                send_message(chat_id, "✅ Регистрация завершена", Keyboards.action(chat_id))
+            else:
+                raise Exception("Не удалось сохранить пользователя в базе данных")
         except Exception as e:
-            send_message(chat_id, f"❌ Ошибка: {e}")
+            logger.error(f"Ошибка при регистрации пользователя {chat_id}: {e}")
+            send_message(chat_id, f"❌ Ошибка регистрации: {str(e)}. Попробуйте снова с /start", Keyboards.main_menu())
 
 # Подача заявки
 def application_start_date(message, app_type):
     chat_id = message.chat.id
     if handle_main_menu_return(message):
         return
-    is_valid, result = validate_date(message.text)  # По умолчанию allow_past=False
+    is_valid, result = validate_date(message.text)
     if not is_valid:
         send_message(chat_id, f"❌ {result}", Keyboards.main_menu())
         handle_main_menu_return(message, application_start_date, app_type)
@@ -408,7 +433,7 @@ def report_applications_start_date(message):
     chat_id = message.chat.id
     if handle_main_menu_return(message):
         return
-    is_valid, start_date = validate_date(message.text, allow_past=True)  # Разрешаем прошедшие даты
+    is_valid, start_date = validate_date(message.text, allow_past=True)
     if not is_valid:
         send_message(chat_id, f"❌ {start_date}", Keyboards.main_menu())
         handle_main_menu_return(message, report_applications_start_date)
@@ -420,7 +445,7 @@ def report_applications_end_date(message, start_date):
     chat_id = message.chat.id
     if handle_main_menu_return(message):
         return
-    is_valid, end_date = validate_date(message.text)  # По умолчанию allow_past=False
+    is_valid, end_date = validate_date(message.text)
     if not is_valid:
         send_message(chat_id, f"❌ {end_date}", Keyboards.main_menu())
         handle_main_menu_return(message, report_applications_end_date, start_date)
@@ -447,37 +472,29 @@ def generate_applications_report(chat_id, start_date, end_date):
         pdf_buffer = generate_pdf_report("Отчет по заявкам", report_lines)
         send_pdf(chat_id, pdf_buffer, f"Applications_{start_date.date()}_{end_date.date()}.pdf")
         send_message(chat_id, "Отчет отправлен в PDF", Keyboards.action(chat_id))
-        logger.info(f"Generated PDF applications report for {chat_id} from {start_date.date()} to {end_date.date()}")
+        logger.info(f"Сгенерирован PDF отчет по заявкам для {chat_id} с {start_date.date()} по {end_date.date()}")
 
 def generate_logs_report(chat_id):
-    # Определяем временной диапазон: последние 24 часа
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(hours=24)
-
     with db_session() as session:
-        # Запрашиваем логи за последние 24 часа
         logs = session.query(Log).filter(
             Log.timestamp >= start_time,
             Log.timestamp <= end_time
         ).order_by(Log.timestamp.asc()).all()
-
         if not logs:
             send_message(chat_id, "Логов за последние 24 часа нет", Keyboards.action(chat_id))
             return
-
-        # Формируем строки для отчета
         report_lines = [f"Логи за последние 24 часа (с {start_time.strftime('%Y-%m-%d %H:%M:%S')} по {end_time.strftime('%Y-%m-%d %H:%M:%S')}):"]
         for log in logs:
             user = session.query(User).filter_by(user_id=log.user_id).first()
             user_info = f"{user.first_name} {user.last_name} ({log.user_id})" if user else f"Пользователь {log.user_id}"
             report_lines.append(f"{log.timestamp.strftime('%Y-%m-%d %H:%M:%S')} - {user_info}: {log.action}")
-
-        # Генерируем PDF
         pdf_buffer = generate_pdf_report("Отчет по логам", report_lines)
         filename = f"Logs_{end_time.strftime('%Y-%m-%d_%H-%M-%S')}.pdf"
         send_pdf(chat_id, pdf_buffer, filename)
         send_message(chat_id, "Отчет по логам отправлен в PDF", Keyboards.action(chat_id))
-        logger.info(f"Generated PDF logs report for {chat_id} from {start_time} to {end_time}")
+        logger.info(f"Сгенерирован PDF отчет по логам для {chat_id} с {start_time} по {end_time}")
 
 @bot.message_handler(func=lambda m: m.text == "⏳ Длительность по отделам")
 def report_duration_departments(message):
@@ -531,7 +548,7 @@ def generate_duration_report(chat_id, year):
         pdf_buffer = generate_pdf_report("Отчет по длительности", report_lines)
         send_pdf(chat_id, pdf_buffer, f"Duration_{year}.pdf")
         send_message(chat_id, "Отчет отправлен в PDF", Keyboards.action(chat_id))
-        logger.info(f"Generated PDF duration report for {chat_id} for year {year}")
+        logger.info(f"Сгенерирован PDF отчет по длительности для {chat_id} за {year}")
 
 @bot.message_handler(func=lambda m: m.text == "👤 Заявки сотрудника")
 def report_employee_applications(message):
@@ -564,7 +581,7 @@ def generate_employee_report(call):
         pdf_buffer = generate_pdf_report(f"Отчет по заявкам сотрудника {user.first_name} {user.last_name}", report_lines)
         send_pdf(chat_id, pdf_buffer, f"Employee_{user_id}_Applications.pdf")
         send_message(chat_id, "Отчет отправлен в PDF", Keyboards.action(chat_id))
-        logger.info(f"Generated PDF employee report for {user_id} by {chat_id}")
+        logger.info(f"Сгенерирован PDF отчет по сотруднику {user_id} для {chat_id}")
 
 # Удаление пользователя
 def delete_user_button(message):
@@ -616,11 +633,11 @@ def cancel_delete(call):
 # Запуск бота
 if __name__ == "__main__":
     try:
-        logger.info("Starting bot...")
+        logger.info("Запуск бота...")
         bot.polling(none_stop=True)
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("Бот остановлен пользователем")
         engine.dispose()
     except Exception as e:
-        logger.error(f"Bot crashed: {e}")
+        logger.error(f"Бот упал: {e}")
         engine.dispose()
